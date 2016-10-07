@@ -17,7 +17,7 @@
       #floating-panel {
         position: absolute;
         top: 10px;
-        left: 25%;
+        right: 10px;
         z-index: 5;
         background-color: #fff;
         padding: 5px;
@@ -45,20 +45,33 @@
     <div id="map"></div>
 
     <form id="floating-panel">
-      Start Date: <input type="date" id="start-date" value="2016-09-06">
-      End Date:   <input type="date" id="end-date" value="2016-10-06"><br>
-      TOTAL: <span id="total"></span> Orders
+      Date: <input type="date" id="date" value="2016-10-06" onChange='drawLines()'>
+      Days:
+      <select id="days" onChange='drawLines()'>
+        <option value='1'>Today</option>
+        <option value='3'>Last 3 Days</option>
+        <option value='7'>Last Week</option>
+        <option value='14'>Last Fortnight</option>
+        <option value='30' selected>Last 30 Days</option>
+        <option value='90'>Last 90 Days</option>
+        <option value='365'>Last Year</option>
+        <option value='9999'>All Time</option>
+      </select>
       <br>
-      Dataset:
-      <select id='select-data'><option>Change Dataset</option></select>
+
+      <span id="total"></span> Orders (<span id='display-start'></span> - <span id='display-end'></span>)
       <br>
 
       Mode:
-      <input type="radio" name="mode" value="lines" checked=true> Lines
-      <input type="radio" name="mode" value="dots"> Dots
-      <input type="radio" name="mode" value="heatmap"> Heatmap
-
+      <input onChange='drawLines(event, false)' type="radio" name="mode" value="lines" checked=true> Lines
+      <input onChange='drawLines(event, false)' type="radio" name="mode" value="dots"> Markers
+      <input onChange='drawLines(event, false)' type="radio" name="mode" value="heatmap"> Heatmap
       <br>
+
+      Dataset:
+      <select id='select-data' onChange='changeDataSource(this)'><option>Change Dataset</option></select>
+      <br>
+
       <button id="change-date">Update</button>
     </form>
 
@@ -77,10 +90,6 @@
                 $select.add(option);
               });
             });
-        $select.addEventListener('change', (event) => {
-          window.location.search = `?dataset=${event.currentTarget.value}`;
-        });
-
     </script>
 
     <script>
@@ -95,6 +104,11 @@
       var cache = [];
       var filteredFulfillments;
       var dataset = queryParams.dataset || 'dollboxx';
+      const DATE_FORMAT = 'MMM Do YYYY';
+
+      function changeDataSource(target) {
+        window.location.search = `?dataset=${target.value}`;
+      }
 
       function initMap() {
         window.fetch(`/data/${dataset}.json`).then((response) => {
@@ -127,37 +141,38 @@
         };
       }
 
-      function drawLines(event) {
+      function drawLines(event, rebound=true) {
         if (event) { event.preventDefault(); }
         cache.forEach((entry) => {
           entry.setMap(null);
         });
 
         cache = [];
-        const startDate   = moment(document.getElementById('start-date').value);
-        const endDate     = moment(document.getElementById('end-date').value);
-        const rangeLength = endDate.diff(startDate, 'days');
+        const endDate     = moment(document.getElementById('date').value);
+        const rangeLength = document.getElementById('days').value;
+        const startDate   = endDate.clone().subtract(rangeLength, 'days');
 
-        if (startDate > endDate) {
-          window.alert('Start Date must be before End Date');
-        }
+        document.getElementById('display-start').textContent = startDate.format(DATE_FORMAT);
+        document.getElementById('display-end').textContent = endDate.format(DATE_FORMAT);
 
         filteredFulfillments = window.fulfillments.filter((fulfillment) => {
           shipDate = moment(fulfillment.ship_at);
           return shipDate >= startDate && shipDate <= endDate;
         });
 
-        var minLat = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'latitude')));
-        var minLng = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'longitude')));
-        var maxLat = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'latitude')));
-        var maxLng = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'longitude')));
+        if (rebound) {
+          var minLat = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'latitude')));
+          var minLng = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'longitude')));
+          var maxLat = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'latitude')));
+          var maxLng = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'longitude')));
 
-        var bounds = new google.maps.LatLngBounds(
-          new google.maps.LatLng({lat: minLat, lng: minLng}),
-          new google.maps.LatLng({lat: maxLat, lng: maxLng})
-        );
+          var bounds = new google.maps.LatLngBounds(
+            new google.maps.LatLng({lat: minLat, lng: minLng}),
+            new google.maps.LatLng({lat: maxLat, lng: maxLng})
+          );
 
-        window.map.fitBounds(bounds);
+          window.map.fitBounds(bounds);
+        }
 
         document.getElementById('total').textContent = filteredFulfillments.length;
 
@@ -190,12 +205,16 @@
 
       function buildHeatmap(filteredFulfillments, endDate, rangeLength, cache) {
         let heatPoints = filteredFulfillments.map((fulfillment) => {
-          return new google.maps.LatLng({lat: +fulfillment.latitude, lng: +fulfillment.longitude});
+          return {
+            location: new google.maps.LatLng({lat: +fulfillment.latitude, lng: +fulfillment.longitude}),
+            weight:   1
+          };
         });
 
         let heatmap = new google.maps.visualization.HeatmapLayer({
           data: heatPoints,
           map: window.map,
+          dissipating: true,
           radius: 20,
         });
 
@@ -238,6 +257,7 @@
       // Shut JSHint up
       if (false) {
         initMap();
+        changeDataSource();
       }
     </script>
 
