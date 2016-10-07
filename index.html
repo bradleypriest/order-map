@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>How You Doing?</title>
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no">
+    <meta charset="utf-8">
+    <style>
+      html, body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        height: 100%;
+      }
+
+      #floating-panel {
+        position: absolute;
+        top: 10px;
+        left: 25%;
+        z-index: 5;
+        background-color: #fff;
+        padding: 5px;
+        border: 1px solid #999;
+        text-align: center;
+        font-family: 'OpenSans','sans-serif';
+        line-height: 30px;
+        padding-left: 10px;
+      }
+      #change-date {
+        float: right;
+        margin-top: 8px;
+      }
+    </style>
+    <!--
+    Account.find(40012).orders.active.joins(:stock_location, :shipping_address).merge(Address.where.not(latitude: nil)).select(
+      :id, :order_number, "locations.latitude as stock_location_latitude", "locations.longitude as stock_location_longitude",
+      "addresses.longitude", "addresses.latitude", :ship_at
+    ).to_json
+    -->
+    <script src="https://rawgit.com/jgallen23/querystring/master/dist/querystring.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.15.1/moment.js"></script>
+  </head>
+  <body>
+    <div id="map"></div>
+
+    <form id="floating-panel">
+      Start Date: <input type="date" id="start-date" value="2016-09-06">
+      End Date:   <input type="date" id="end-date" value="2016-10-06"><br>
+      TOTAL: <span id="total"></span> Orders
+      <br>
+      Dataset:
+      <select id='select-data'><option>Change Dataset</option></select>
+      <br>
+
+      Mode:
+      <input type="radio" name="mode" value="lines" checked=true> Lines
+      <input type="radio" name="mode" value="dots"> Dots
+      <input type="radio" name="mode" value="heatmap"> Heatmap
+
+      <br>
+      <button id="change-date">Update</button>
+    </form>
+
+    <script type="text/javascript">
+      let $select = document.getElementById('select-data');
+      window.fetch("/data").then((response) => response.text())
+            .then((body) => {
+                return body.match(/'\/data\/(.+)\.json'>/g).map((string) => {
+                  return string.match(/'\/data\/(.+)\.json'>/)[1];
+                });
+            }).then((datasets) => {
+              let option;
+              datasets.forEach((value) => {
+                option = document.createElement('option');
+                option.value = option.text = value;
+                $select.add(option);
+              });
+            });
+        $select.addEventListener('change', (event) => {
+          window.location.search = `?dataset=${event.currentTarget.value}`;
+        });
+
+    </script>
+
+    <script>
+      // This example requires the Geometry library. Include the libraries=geometry
+      // parameter when you first load the API. For example:
+      // <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=geometry">
+      const queryParams = window.querystring.parse(window.location.search);
+
+      var geodesicPoly;
+      var marker;
+      var shipDate;
+      var cache = [];
+      var filteredFulfillments;
+      var dataset = queryParams.dataset || 'dollboxx';
+
+      function initMap() {
+        window.fetch(`/data/${dataset}.json`).then((response) => {
+          return response.json();
+        }).then((fulfillments) => {
+          window.fulfillments = fulfillments;
+          window.map = new google.maps.Map(document.getElementById('map'), {
+            zoom: 4,
+            center: {lat: 34, lng: -40.605}
+          });
+          window.infoWindow = new google.maps.InfoWindow();
+          document.getElementById('floating-panel').addEventListener('submit', drawLines);
+          drawLines();
+        });
+      }
+
+      function edgeValue(fulfillment, direction, attribute) {
+        return Math[direction](+fulfillment[`stock_location_${attribute}`], +fulfillment[attribute]);
+      }
+
+      function polyLineAttrs(fulfillment, endDate, rangeLength) {
+        let age = endDate.diff(moment(fulfillment.ship_at), 'days');
+
+        return {
+          map: window.map,
+          geodesic: true,
+          strokeColor: (age > (rangeLength * 0.8) ? '#ccc' : '#70cf32'),
+          // strokeOpacity: (30 - age)/30,
+          strokeWeight: (rangeLength - age)/(rangeLength/3),
+        };
+      }
+
+      function drawLines(event) {
+        if (event) { event.preventDefault(); }
+        cache.forEach((entry) => {
+          entry.setMap(null);
+        });
+
+        cache = [];
+        const startDate   = moment(document.getElementById('start-date').value);
+        const endDate     = moment(document.getElementById('end-date').value);
+        const rangeLength = endDate.diff(startDate, 'days');
+
+        if (startDate > endDate) {
+          window.alert('Start Date must be before End Date');
+        }
+
+        filteredFulfillments = window.fulfillments.filter((fulfillment) => {
+          shipDate = moment(fulfillment.ship_at);
+          return shipDate >= startDate && shipDate <= endDate;
+        });
+
+        var minLat = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'latitude')));
+        var minLng = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'longitude')));
+        var maxLat = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'latitude')));
+        var maxLng = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'longitude')));
+
+        var bounds = new google.maps.LatLngBounds(
+          new google.maps.LatLng({lat: minLat, lng: minLng}),
+          new google.maps.LatLng({lat: maxLat, lng: maxLng})
+        );
+
+        window.map.fitBounds(bounds);
+
+        document.getElementById('total').textContent = filteredFulfillments.length;
+
+        let addToMap;
+        let mode = document.querySelector('input[name="mode"]:checked').value || 'lines';
+        switch (mode) {
+          case 'dots':
+            addToMap = buildMarker;
+            break;
+          case 'lines':
+            addToMap = buildPolyDesicPoly;
+            break;
+          case 'heatmap':
+            addToMap = buildHeatmap;
+            break;
+        }
+
+        addToMap(filteredFulfillments, endDate, rangeLength, cache);
+      }
+
+      function buildMarker(filteredFulfillments, endDate, rangeLength, cache) {
+        filteredFulfillments.forEach((fulfillment) => {
+          marker = new google.maps.Marker({
+            position: {lat: +fulfillment.latitude, lng: +fulfillment.longitude},
+            map: window.map
+          });
+          cache.push(marker);
+        });
+      }
+
+      function buildHeatmap(filteredFulfillments, endDate, rangeLength, cache) {
+        let heatPoints = filteredFulfillments.map((fulfillment) => {
+          return new google.maps.LatLng({lat: +fulfillment.latitude, lng: +fulfillment.longitude});
+        });
+
+        let heatmap = new google.maps.visualization.HeatmapLayer({
+          data: heatPoints,
+          map: window.map,
+          radius: 20,
+        });
+
+        cache.push(heatmap);
+      }
+
+      function buildPolyDesicPoly(filteredFulfillments, endDate, rangeLength, cache) {
+        filteredFulfillments.forEach((fulfillment) => {
+
+          geodesicPoly = new google.maps.Polyline(polyLineAttrs(fulfillment, endDate, rangeLength));
+
+          var path = [
+            new google.maps.LatLng({
+              lat: +fulfillment.stock_location_latitude,
+              lng: +fulfillment.stock_location_longitude
+            }),
+            new google.maps.LatLng({
+              lat: +fulfillment.latitude, lng: +fulfillment.longitude
+            }),
+          ];
+
+          geodesicPoly.setPath(path);
+          geodesicPoly.fulfillment = fulfillment;
+
+          let content = `
+            <p>Order: ${fulfillment.order_number}</p>
+            <p>${fulfillment.ship_at}</p>
+          `;
+
+          geodesicPoly.addListener('click', (data) => {
+            window.infoWindow.setContent(content);
+            window.infoWindow.setPosition(data.latLng);
+            window.infoWindow.open(window.map);
+          });
+
+          cache.push(geodesicPoly);
+        });
+      }
+
+      // Shut JSHint up
+      if (false) {
+        initMap();
+      }
+    </script>
+
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDoqhZr5T0ACxfgdwrj0p7sKbi1m7bSVjc&libraries=geometry,visualization&callback=initMap" async defer></script>
+
+  </body>
+</html>
