@@ -40,11 +40,23 @@
     -->
     <script src="https://rawgit.com/jgallen23/querystring/master/dist/querystring.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.15.1/moment.js"></script>
+    <script src="http://underscorejs.org/underscore.js"></script>
   </head>
   <body>
     <div id="map"></div>
 
     <form id="floating-panel">
+      Dataset:
+      <select id='select-data' onChange='changeDataSource(this)'><option>Change Dataset</option></select>
+      <br>
+
+      Mode:
+      <input onChange='drawLines(event, false)' type="radio" name="mode" value="lines" checked=true> Lines
+      <input onChange='drawLines(event, false)' type="radio" name="mode" value="dots"> Markers
+      <input onChange='drawLines(event, false)' type="radio" name="mode" value="heatmap"> Heatmap
+      <br>
+      <hr>
+
       Date: <input type="date" id="date" value="2016-10-06" onChange='drawLines()'>
       Days:
       <select id="days" onChange='drawLines()'>
@@ -60,19 +72,10 @@
       <br>
 
       <span id="total"></span> Orders (<span id='display-start'></span> - <span id='display-end'></span>)
+      <hr>
+      <small>or</small>
+      <button onClick='drawLines(event, true, true)'>Press Play</button>
       <br>
-
-      Mode:
-      <input onChange='drawLines(event, false)' type="radio" name="mode" value="lines" checked=true> Lines
-      <input onChange='drawLines(event, false)' type="radio" name="mode" value="dots"> Markers
-      <input onChange='drawLines(event, false)' type="radio" name="mode" value="heatmap"> Heatmap
-      <br>
-
-      Dataset:
-      <select id='select-data' onChange='changeDataSource(this)'><option>Change Dataset</option></select>
-      <br>
-
-      <button id="change-date">Update</button>
     </form>
 
     <script type="text/javascript">
@@ -114,18 +117,23 @@
         window.fetch(`/data/${dataset}.json`).then((response) => {
           return response.json();
         }).then((fulfillments) => {
+
           window.fulfillments = fulfillments;
           window.map = new google.maps.Map(document.getElementById('map'), {
             zoom: 4,
             center: {lat: 34, lng: -40.605}
           });
+
           window.infoWindow = new google.maps.InfoWindow();
-          document.getElementById('floating-panel').addEventListener('submit', drawLines);
           drawLines();
         });
       }
 
-      function edgeValue(fulfillment, direction, attribute) {
+      function edgeValue(items, direction, attribute) {
+        return Math[direction](...items.map((item) => edgeValueForItem(item, direction, attribute)));
+      }
+
+      function edgeValueForItem(fulfillment, direction, attribute) {
         return Math[direction](+fulfillment[`stock_location_${attribute}`], +fulfillment[attribute]);
       }
 
@@ -141,7 +149,7 @@
         };
       }
 
-      function drawLines(event, rebound=true) {
+      function drawLines(event, rebound=true, play=false) {
         if (event) { event.preventDefault(); }
         cache.forEach((entry) => {
           entry.setMap(null);
@@ -161,10 +169,10 @@
         });
 
         if (rebound) {
-          var minLat = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'latitude')));
-          var minLng = Math.min(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'min', 'longitude')));
-          var maxLat = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'latitude')));
-          var maxLng = Math.max(...filteredFulfillments.map((fulfillment) => edgeValue(fulfillment, 'max', 'longitude')));
+          var minLat = edgeValue(filteredFulfillments, 'min', 'latitude');
+          var minLng = edgeValue(filteredFulfillments, 'min', 'longitude');
+          var maxLat = edgeValue(filteredFulfillments, 'max', 'latitude');
+          var maxLng = edgeValue(filteredFulfillments, 'max', 'longitude');
 
           var bounds = new google.maps.LatLngBounds(
             new google.maps.LatLng({lat: minLat, lng: minLng}),
@@ -190,10 +198,12 @@
             break;
         }
 
-        addToMap(filteredFulfillments, endDate, rangeLength, cache);
+        addToMap(filteredFulfillments, endDate, rangeLength, play, cache);
       }
 
-      function buildMarker(filteredFulfillments, endDate, rangeLength, cache) {
+      function buildMarker(filteredFulfillments, endDate, rangeLength, play, cache) {
+        if (play) { return buildMarkerPlay(filteredFulfillments, endDate, rangeLength); }
+
         filteredFulfillments.forEach((fulfillment) => {
           marker = new google.maps.Marker({
             position: {lat: +fulfillment.latitude, lng: +fulfillment.longitude},
@@ -203,7 +213,29 @@
         });
       }
 
-      function buildHeatmap(filteredFulfillments, endDate, rangeLength, cache) {
+      function buildMarkerPlay(filteredFulfillments, endDate, rangeLength, play, cache) {
+        let grouped = _.groupBy(filteredFulfillments, 'ship_at');
+        let dates  = Object.keys(grouped).sort();
+        let index = 0;
+        let date;
+
+        window.ticker = window.setInterval(() => {
+          date = dates[index];
+          index++;
+          grouped[date].forEach((fulfillment) => {
+            marker = new google.maps.Marker({
+              position: {lat: +fulfillment.latitude, lng: +fulfillment.longitude},
+              map: window.map
+            });
+            cache.push(marker);
+          });
+          if (index === dates.length) {
+            window.clearInterval(window.ticker);
+          }
+        }, 500);
+      }
+
+      function buildHeatmap(filteredFulfillments, endDate, rangeLength, play, cache) {
         let heatPoints = filteredFulfillments.map((fulfillment) => {
           return {
             location: new google.maps.LatLng({lat: +fulfillment.latitude, lng: +fulfillment.longitude}),
@@ -221,7 +253,9 @@
         cache.push(heatmap);
       }
 
-      function buildPolyDesicPoly(filteredFulfillments, endDate, rangeLength, cache) {
+      function buildPolyDesicPoly(filteredFulfillments, endDate, rangeLength, play, cache) {
+        if (play) { return buildPolyDesicPolyPlay(filteredFulfillments, endDate, rangeLength); }
+
         filteredFulfillments.forEach((fulfillment) => {
 
           geodesicPoly = new google.maps.Polyline(polyLineAttrs(fulfillment, endDate, rangeLength));

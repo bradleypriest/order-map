@@ -1,5 +1,5 @@
 {
-    "predef": ["window", "google", "moment", "document", "console"],
+    "predef": ["window", "google", "moment", "document", "console", "_"],
     "esversion": 6,
     "evil": true,
     "forin": false,
