@@ -59,7 +59,7 @@
 
       Date: <input type="date" id="date" value="2016-10-06" onChange='drawLines()'>
       Days:
-      <select id="days" onChange='drawLines()'>
+      <select id="days" onChange='drawLines(event, false)'>
         <option value='1'>Today</option>
         <option value='3'>Last 3 Days</option>
         <option value='7'>Last Week</option>
@@ -74,7 +74,7 @@
       <span id="total"></span> Orders (<span id='display-start'></span> - <span id='display-end'></span>)
       <hr>
       <small>or</small>
-      <button onClick='drawLines(event, true, true)'>Press Play</button>
+      <button onClick='drawLines(event, false, true)'>Press Play</button>
       <br>
     </form>
 
@@ -107,6 +107,7 @@
       var cache = [];
       var filteredFulfillments;
       var dataset = queryParams.dataset || 'dollboxx';
+      var totalHeatPoints;
       const DATE_FORMAT = 'MMM Do YYYY';
 
       function changeDataSource(target) {
@@ -188,7 +189,7 @@
         let mode = document.querySelector('input[name="mode"]:checked').value || 'lines';
         switch (mode) {
           case 'dots':
-            addToMap = buildMarker;
+            addToMap = buildMarkers;
             break;
           case 'lines':
             addToMap = buildPolyDesicPoly;
@@ -198,44 +199,12 @@
             break;
         }
 
-        addToMap(filteredFulfillments, endDate, rangeLength, play, cache);
+        addToMap(filteredFulfillments, endDate, rangeLength, play);
       }
 
-      function buildMarker(filteredFulfillments, endDate, rangeLength, play, cache) {
-        if (play) { return buildMarkerPlay(filteredFulfillments, endDate, rangeLength); }
+      function buildHeatmap(filteredFulfillments, endDate, rangeLength, play) {
+        if (play) { return buildHeatmapPlay(filteredFulfillments, endDate, rangeLength); }
 
-        filteredFulfillments.forEach((fulfillment) => {
-          marker = new google.maps.Marker({
-            position: {lat: +fulfillment.latitude, lng: +fulfillment.longitude},
-            map: window.map
-          });
-          cache.push(marker);
-        });
-      }
-
-      function buildMarkerPlay(filteredFulfillments, endDate, rangeLength, play, cache) {
-        let grouped = _.groupBy(filteredFulfillments, 'ship_at');
-        let dates  = Object.keys(grouped).sort();
-        let index = 0;
-        let date;
-
-        window.ticker = window.setInterval(() => {
-          date = dates[index];
-          index++;
-          grouped[date].forEach((fulfillment) => {
-            marker = new google.maps.Marker({
-              position: {lat: +fulfillment.latitude, lng: +fulfillment.longitude},
-              map: window.map
-            });
-            cache.push(marker);
-          });
-          if (index === dates.length) {
-            window.clearInterval(window.ticker);
-          }
-        }, 500);
-      }
-
-      function buildHeatmap(filteredFulfillments, endDate, rangeLength, play, cache) {
         let heatPoints = filteredFulfillments.map((fulfillment) => {
           return {
             location: new google.maps.LatLng({lat: +fulfillment.latitude, lng: +fulfillment.longitude}),
@@ -253,39 +222,120 @@
         cache.push(heatmap);
       }
 
-      function buildPolyDesicPoly(filteredFulfillments, endDate, rangeLength, play, cache) {
+      function buildHeatmapPlay(filteredFulfillments, endDate, rangeLength) {
+        totalHeatPoints = [];
+        let heatmap = new google.maps.visualization.HeatmapLayer({
+          data: [],
+          map: window.map,
+          dissipating: true,
+          radius: 20,
+        });
+
+        cache.push(heatmap);
+        playSequence(filteredFulfillments, endDate, rangeLength, heatmap, insertArrayHeatmap, totalHeatPoints);
+      }
+
+      function insertArrayHeatmap(array, endDate, rangeLength, heatmap) {
+        let heatPoints = array.map((fulfillment) => {
+          return {
+            location: new google.maps.LatLng({lat: +fulfillment.latitude, lng: +fulfillment.longitude}),
+            weight:   1
+          };
+        });
+
+        totalHeatPoints.push(...heatPoints);
+
+        heatmap.setData(totalHeatPoints);
+      }
+
+      function buildMarkers(filteredFulfillments, endDate, rangeLength, play) {
+        if (play) { return buildMarkersPlay(filteredFulfillments, endDate, rangeLength); }
+
+        filteredFulfillments.forEach((fulfillment) => {
+          buildMarker(fulfillment, endDate, rangeLength);
+        });
+      }
+
+      function buildMarkersPlay(filteredFulfillments, endDate, rangeLength) {
+        playSequence(filteredFulfillments, endDate, rangeLength, buildMarker);
+        document.getElementById('total').textContent = cache.length;
+      }
+
+      function buildMarker(fulfillment, endDate, rangeLength) {
+        marker = new google.maps.Marker({
+          position: {lat: +fulfillment.latitude, lng: +fulfillment.longitude},
+          map: window.map
+        });
+        cache.push(marker);
+      }
+
+      function buildPolyDesicPoly(filteredFulfillments, endDate, rangeLength, play) {
         if (play) { return buildPolyDesicPolyPlay(filteredFulfillments, endDate, rangeLength); }
 
         filteredFulfillments.forEach((fulfillment) => {
-
-          geodesicPoly = new google.maps.Polyline(polyLineAttrs(fulfillment, endDate, rangeLength));
-
-          var path = [
-            new google.maps.LatLng({
-              lat: +fulfillment.stock_location_latitude,
-              lng: +fulfillment.stock_location_longitude
-            }),
-            new google.maps.LatLng({
-              lat: +fulfillment.latitude, lng: +fulfillment.longitude
-            }),
-          ];
-
-          geodesicPoly.setPath(path);
-          geodesicPoly.fulfillment = fulfillment;
-
-          let content = `
-            <p>Order: ${fulfillment.order_number}</p>
-            <p>${fulfillment.ship_at}</p>
-          `;
-
-          geodesicPoly.addListener('click', (data) => {
-            window.infoWindow.setContent(content);
-            window.infoWindow.setPosition(data.latLng);
-            window.infoWindow.open(window.map);
-          });
-
-          cache.push(geodesicPoly);
+          buildPolyLine(fulfillment, endDate, rangeLength);
         });
+      }
+
+      function buildPolyDesicPolyPlay(filteredFulfillments, endDate, rangeLength) {
+        playSequence(filteredFulfillments, endDate, rangeLength, buildPolyLine);
+      }
+
+      function buildPolyLine(fulfillment, endDate, rangeLength) {
+        geodesicPoly = new google.maps.Polyline(polyLineAttrs(fulfillment, endDate, rangeLength));
+
+        var path = [
+          new google.maps.LatLng({
+            lat: +fulfillment.stock_location_latitude,
+            lng: +fulfillment.stock_location_longitude
+          }),
+          new google.maps.LatLng({
+            lat: +fulfillment.latitude, lng: +fulfillment.longitude
+          }),
+        ];
+
+        geodesicPoly.setPath(path);
+        geodesicPoly.fulfillment = fulfillment;
+
+        let content = `
+          <p>Order: ${fulfillment.order_number}</p>
+          <p>${fulfillment.ship_at}</p>
+        `;
+
+        geodesicPoly.addListener('click', (data) => {
+          window.infoWindow.setContent(content);
+          window.infoWindow.setPosition(data.latLng);
+          window.infoWindow.open(window.map);
+        });
+
+        cache.push(geodesicPoly);
+      }
+
+      function insertArrayBasic(array, endDate, rangeLength, insertFn) {
+        array.forEach((fulfillment) => {
+          insertFn(fulfillment, endDate, rangeLength);
+        });
+      }
+
+      function playSequence(filteredFulfillments, endDate, rangeLength, insertFn, insertArray=insertArrayBasic, totalCache=cache) {
+        let grouped = _.groupBy(filteredFulfillments, 'ship_at');
+        let dates  = Object.keys(grouped).sort();
+        let index = 0;
+        let date;
+
+        window.ticker = window.setInterval(() => {
+          date = dates[index];
+          index++;
+
+          insertArray(grouped[date], endDate, rangeLength, insertFn);
+
+          if (index === dates.length) {
+            window.clearInterval(window.ticker);
+          }
+
+          document.getElementById('total').textContent = totalCache.length;
+          document.getElementById('display-end').textContent = moment(date).format(DATE_FORMAT);
+        }, 300);
       }
 
       // Shut JSHint up
